@@ -8,16 +8,13 @@ import * as jwt from 'jsonwebtoken';
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private accessToken: string = null;
-  private tokenExpiration = 0; // timestamp (ms)
+  private tokenExpiration = 0;
 
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
   ) {}
 
-  /**
-   * Lấy access token. Nếu token chưa tồn tại hoặc hết hạn, tiến hành đăng nhập lại.
-   */
   async getAccessToken(): Promise<string> {
     if (!this.accessToken || Date.now() >= this.tokenExpiration) {
       await this.login();
@@ -25,10 +22,6 @@ export class AuthService {
     return this.accessToken;
   }
 
-  /**
-   * Đăng nhập vào ThingsBoard để lấy access token.
-   * Sau khi nhận được token, decode JWT để lấy trường exp (expiration)
-   */
   private async login(): Promise<void> {
     const thingsboardUrl = this.configService.get<string>('THINGSBOARD_URL');
     const username = this.configService.get<string>('THINGSBOARD_USERNAME');
@@ -47,13 +40,10 @@ export class AuthService {
           },
         ),
       );
-      // Lưu token
       this.accessToken = response.data.token;
 
-      // Decode token để lấy thời gian hết hạn (exp tính theo giây, chuyển sang ms)
       const decoded: any = jwt.decode(this.accessToken);
       if (!decoded || !decoded.exp) {
-        // Nếu không có thông tin exp thì mặc định 5 phút
         this.tokenExpiration = Date.now() + 300000;
       } else {
         this.tokenExpiration = decoded.exp * 1000;

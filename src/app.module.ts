@@ -6,11 +6,9 @@ import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
-    // Đọc biến môi trường từ file .env
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    // Cho phép thực hiện các request HTTP
     HttpModule,
     ActionsModule,
     AuthModule,
