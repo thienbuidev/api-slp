@@ -9,7 +9,7 @@ import {
 import { ActionsService } from './actions.service';
 import { ScheduleParams } from './actions.interface';
 
-@Controller()
+@Controller('actions')
 export class ActionsController {
   constructor(private readonly actionsService: ActionsService) {}
 
@@ -18,7 +18,7 @@ export class ActionsController {
     return 'Server is up and running!';
   }
 
-  @Post('actions/turnlight')
+  @Post('/turnlight')
   async processAction(@Body() body: { assetId: string; statusLight: string }) {
     try {
       await this.actionsService.processAction(body.assetId, body.statusLight);
@@ -31,8 +31,10 @@ export class ActionsController {
     }
   }
 
-  @Post('actions/schedule')
-  async processSchedule(@Body() body: { assetId: string; params: ScheduleParams }) {
+  @Post('/schedule')
+  async processSchedule(
+    @Body() body: { assetId: string; params: ScheduleParams },
+  ) {
     try {
       await this.actionsService.processSchedule(body.assetId, body.params);
       return { message: 'Schedule processed successfully' };

@@ -25,10 +25,8 @@ export class ActionsService {
   }
 
   async processAction(assetId: string, statusLight: string): Promise<void> {
-    // Lấy ThingsBoard token (sẽ tự động kiểm tra hiệu lực và đăng nhập nếu cần)
     const thingsboardToken = await this.authService.getAccessToken();
 
-    // Gọi API ThingsBoard: POST /api/relations
     const relationsUrl = `${this.thingsboardUrl}/api/relations`;
     const relationsPayload = {
       parameters: {
@@ -64,7 +62,6 @@ export class ActionsService {
 
     this.logger.log(`Device IDs: ${deviceIds}`);
 
-    // Với mỗi device, lấy telemetry và attributes từ ThingsBoard rồi gửi lên ChirpStack
     for (const deviceId of deviceIds) {
       const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
       const attributesUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/attributes?keys=dev_eui`;
@@ -104,14 +101,11 @@ export class ActionsService {
       }
       const devEui = attributesData.value;
 
-      // Tạo hex string và chuyển đổi sang base64
       const hexString = this.encodeHexTurnLight(dataUid, statusLight);
       const base64String = this.decodeHexToBase64(hexString);
 
-      // Đợi 6 giây trước khi gọi API ChirpStack (có thể dùng để đồng bộ nếu cần)
       await new Promise((resolve) => setTimeout(resolve, 6000));
 
-      // Gọi API ChirpStack để gửi queue
       const chirpstackUrl = `${this.chirpstackUrl}/api/devices/${devEui}/queue`;
       const chirpstackPayload = {
         queueItem: {
@@ -137,7 +131,10 @@ export class ActionsService {
     }
   }
 
-  async processSchedule(assetId: string, scheduleParams: ScheduleParams ): Promise<void> {
+  async processSchedule(
+    assetId: string,
+    scheduleParams: ScheduleParams,
+  ): Promise<void> {
     const thingsboardToken = await this.authService.getAccessToken();
 
     const relationsUrl = `${this.thingsboardUrl}/api/relations`;
@@ -175,7 +172,6 @@ export class ActionsService {
 
     this.logger.log(`Processing schedule for devices: ${deviceIds}`);
 
-    // Với mỗi device, lấy telemetry và attributes từ ThingsBoard rồi gửi lên ChirpStack
     for (const deviceId of deviceIds) {
       const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
       const attributesUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/attributes?keys=dev_eui`;
@@ -215,17 +211,14 @@ export class ActionsService {
       }
       const devEui = attributesData.value;
 
-      // Tạo hex string cho lịch trình và chuyển đổi sang base64
       const hexString = this.encodeHexSchedule(dataUid, scheduleParams);
       const base64String = this.decodeHexToBase64(hexString);
 
       this.logger.log(`Schedule Hex: ${hexString}`);
       this.logger.log(`Schedule Base64: ${base64String}`);
 
-      // Đợi 6 giây trước khi gọi API ChirpStack (có thể dùng để đồng bộ nếu cần)
       await new Promise((resolve) => setTimeout(resolve, 6000));
 
-      // Gọi API ChirpStack để gửi queue
       const chirpstackUrl = `${this.chirpstackUrl}/api/devices/${devEui}/queue`;
       const chirpstackPayload = {
         queueItem: {
@@ -287,13 +280,22 @@ export class ActionsService {
     const uidHex = '68' + data_UID.toUpperCase();
 
     const { setTime1, setTime2, dimming1, dimming2 } = params;
-    if (!setTime1 || !setTime2 || dimming1 === undefined || dimming2 === undefined) {
+    if (
+      !setTime1 ||
+      !setTime2 ||
+      dimming1 === undefined ||
+      dimming2 === undefined
+    ) {
       throw new Error('Missing required parameters in params');
     }
     const toHex = (value: number): string =>
       value.toString(16).padStart(2, '0').toUpperCase();
-    const [hour1, minute1] = setTime1.split(`:`).map((t) => toHex(parseInt(t, 10)));
-    const [hour2, minute2] = setTime2.split(':').map((t) => toHex(parseInt(t, 10)));
+    const [hour1, minute1] = setTime1
+      .split(`:`)
+      .map((t) => toHex(parseInt(t, 10)));
+    const [hour2, minute2] = setTime2
+      .split(':')
+      .map((t) => toHex(parseInt(t, 10)));
     const dimHex1 = toHex(dimming1);
     const dimHex2 = toHex(dimming2);
 
