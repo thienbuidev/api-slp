@@ -31,6 +31,19 @@ export class ActionsController {
     }
   }
 
+  @Post('actions/timesync')
+  async processTimeSync(@Body() body: { assetId: string; timeNow: string }) {
+    try {
+      await this.actionsService.processTimeSync(body.assetId, body.timeNow);
+      return { message: 'Received successfully' };
+    } catch (error) {
+      throw new HttpException(
+        { error: 'Internal server error', details: error.message },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   @Post('actions/schedule')
   async processSchedule(@Body() body: { assetId: string; params: ScheduleParams }) {
     try {
