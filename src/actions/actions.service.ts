@@ -253,6 +253,113 @@ export class ActionsService {
     }
   }
 
+  async processNotification(assetId: string, assetName: string): Promise<void> {
+    const thingsboardToken = await this.authService.getAccessToken();
+    const deviceIds = await this.getChildDeviceIds(assetId, thingsboardToken);
+    // Với mỗi device, lấy telemetry và attributes từ ThingsBoard rồi gửi lên ChirpStack
+    let onCount = 0;
+    let offCount = 0;
+    for (const deviceId of deviceIds) {
+      const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
+      const dimlevelUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_dim_level`;
+
+      const [telemetryRes, dimlevelRes] = await Promise.all([
+        firstValueFrom(
+          this.httpService.get(telemetryUrl, {
+            headers: {
+              accept: 'application/json',
+              'Content-Type': 'application/json',
+              'X-Authorization': `Bearer ${thingsboardToken}`,
+            },
+          }),
+        ),
+        firstValueFrom(
+          this.httpService.get(dimlevelUrl, {
+            headers: {
+              accept: 'application/json',
+              'Content-Type': 'application/json',
+              'X-Authorization': `Bearer ${thingsboardToken}`,
+            },
+          }),
+        ),
+      ]);
+
+      const telemetryData = telemetryRes.data.data_UID?.[0];
+      if (!telemetryData) {
+        this.logger.error(`No telemetry data for device ${deviceId}`);
+        continue;
+      }
+      const dataUid = telemetryData.value;
+
+      const dimlevelData = dimlevelRes.data.data_dim_level[0];
+    
+      // console.log('dimlevelRes.data.data_dim_level: ', dimlevelRes.data.data_dim_level);
+      if (!dimlevelData) {
+        this.logger.error(`No attributes data for device ${deviceId}`);
+        continue;
+      }
+      const dimLevel = dimlevelData.value;
+
+      if (dimLevel > 0) {
+        onCount++;
+      } else {
+        offCount++;
+      }
+      console.log("oncount: ", onCount);
+      console.log("offcount: ", offCount);
+    }
+
+    
+
+     // Lấy tenant ID
+  // const tenantUrl = `${this.thingsboardUrl}/api/tenant/info`;
+  const tenantId = "8571b990-dd36-11ef-bc91-47f3a7877c36";
+  
+  // const tenantId = "8514f390-dd36-11ef-bc91-47f3a7877c36";
+  const notificationUrl = `${this.thingsboardUrl}/api/notification/request`;
+  const totalDevices = deviceIds.length;
+  
+  const notificationRequest = {
+    "targets": [
+      tenantId
+    ],
+    "template": {
+      "name": "Device Status Report",
+      "notificationType": "GENERAL",
+      "configuration": {
+        "deliveryMethodsTemplates": {
+          "WEB": {
+            "enabled": true,
+            "method": "WEB",
+            "subject": `Báo cáo trạng thái thiết bị`,
+            "body": `${assetName} hiện đang bật ${onCount}/${totalDevices} thiết bị.`
+          }
+        }
+      }
+    },
+    "additionalConfig": {
+      "sendingDelayInSec": 0
+    }
+  };
+  
+  try {
+    const response = await firstValueFrom(
+      this.httpService.post(notificationUrl, notificationRequest, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Authorization': `Bearer ${thingsboardToken}`,
+        },
+      }),
+    );
+    this.logger.log(`Đã gửi thông báo thành công. RequestId: ${response.data.id?.id}`);
+  } catch (error) {
+    this.logger.error(`Lỗi khi gửi thông báo: ${error.message}`);
+    if (error.response) {
+      this.logger.error(`Response: ${JSON.stringify(error.response.data)}`);
+    }
+  }
+  }
+
   private async getChildDeviceIds(
     assetId: string,
     token: string,

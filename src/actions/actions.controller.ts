@@ -58,4 +58,19 @@ export class ActionsController {
       );
     }
   }
+
+  @Post('/notification')
+  async processNotification(
+    @Body() body: { assetId: string; assetName: string }
+  ) {
+    try {
+      await this.actionsService.processNotification(body.assetId, body.assetName);
+      return { message: 'Notification processed successfully' };
+    } catch (error) {
+      throw new HttpException(
+        { error: 'Internal server error', details: error.message },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 }
