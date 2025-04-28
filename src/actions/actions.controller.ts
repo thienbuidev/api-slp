@@ -19,9 +19,20 @@ export class ActionsController {
   }
 
   @Post('/turnlight')
-  async processAction(@Body() body: { assetId: string; statusLight: string }) {
+  async processAction(
+    @Body()
+    body: {
+      assetId: string;
+      statusLight: string;
+      relatedEntityName: string;
+    },
+  ) {
     try {
-      await this.actionsService.processAction(body.assetId, body.statusLight);
+      await this.actionsService.processAction(
+        body.assetId,
+        body.statusLight,
+        body.relatedEntityName,
+      );
       return { message: 'Received successfully' };
     } catch (error) {
       throw new HttpException(
@@ -46,11 +57,38 @@ export class ActionsController {
 
   @Post('/schedule')
   async processSchedule(
-    @Body() body: { assetId: string; params: ScheduleParams },
+    @Body()
+    body: {
+      assetId: string;
+      params: ScheduleParams;
+      relatedEntityName: string;
+    },
   ) {
     try {
-      await this.actionsService.processSchedule(body.assetId, body.params);
+      await this.actionsService.processSchedule(
+        body.assetId,
+        body.params,
+        body.relatedEntityName,
+      );
       return { message: 'Schedule processed successfully' };
+    } catch (error) {
+      throw new HttpException(
+        { error: 'Internal server error', details: error.message },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('/notification')
+  async processNotification(
+    @Body() body: { assetId: string; relatedEntityName: string },
+  ) {
+    try {
+      await this.actionsService.processNotification(
+        body.assetId,
+        body.relatedEntityName,
+      );
+      return { message: 'Notification processed successfully' };
     } catch (error) {
       throw new HttpException(
         { error: 'Internal server error', details: error.message },
