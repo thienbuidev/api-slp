@@ -5,8 +5,13 @@ import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { ScheduleParams } from './actions.interface';
 
+interface DeviceData {
+  deviceId: string;
+  dataUid: string;
+  devEui: string;
+}
+
 @Injectable()
-// get token thingsboard -> call relations api -> get device ids -> call telemetry api -> get data_UID -> call attributes api -> get dev_eui
 export class ActionsService {
   private readonly logger = new Logger(ActionsService.name);
   private readonly thingsboardUrl: string;
@@ -25,339 +30,390 @@ export class ActionsService {
     );
   }
 
-  async processAction(assetId: string, statusLight: string): Promise<void> {
-    const thingsboardToken = await this.authService.getAccessToken();
-    const deviceIds = await this.getChildDeviceIds(assetId, thingsboardToken);
-    // Với mỗi device, lấy telemetry và attributes từ ThingsBoard rồi gửi lên ChirpStack
-    for (const deviceId of deviceIds) {
-      const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
-      const attributesUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/attributes?keys=dev_eui`;
+  async processAction(
+    assetId: string,
+    statusLight: string,
+    relatedEntityName: string,
+  ): Promise<void> {
+    try {
+      const thingsboardToken = await this.authService.getAccessToken();
+      const deviceData = await this.fetchDeviceData(assetId, thingsboardToken);
 
-      const [telemetryRes, attributesRes] = await Promise.all([
-        firstValueFrom(
-          this.httpService.get(telemetryUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-        firstValueFrom(
-          this.httpService.get(attributesUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-      ]);
+      await this.processDevices(deviceData, async (device) => {
+        const hexString = this.encodeHexTurnLight(device.dataUid, statusLight);
+        const base64String = this.decodeHexToBase64(hexString);
 
-      const telemetryData = telemetryRes.data.data_UID?.[0];
-      if (!telemetryData) {
-        this.logger.error(`No telemetry data for device ${deviceId}`);
-        continue;
-      }
-      const dataUid = telemetryData.value;
+        return this.sendChirpstackCommand(device.devEui, base64String);
+      });
 
-      const attributesData = attributesRes.data?.[0];
-      if (!attributesData) {
-        this.logger.error(`No attributes data for device ${deviceId}`);
-        continue;
-      }
-      const devEui = attributesData.value;
-
-      const hexString = this.encodeHexTurnLight(dataUid, statusLight);
-      const base64String = this.decodeHexToBase64(hexString);
-
-      await new Promise((resolve) => setTimeout(resolve, 6000));
-
-      const chirpstackUrl = `${this.chirpstackUrl}/api/devices/${devEui}/queue`;
-      const chirpstackPayload = {
-        queueItem: {
-          confirmed: false,
-          data: base64String,
-          fPort: 10,
-        },
-      };
-
-      const chirpstackRes = await firstValueFrom(
-        this.httpService.post(chirpstackUrl, chirpstackPayload, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Grpc-Metadata-Authorization': `Bearer ${this.chirpstackToken}`,
-          },
-        }),
-      );
+      // Trigger notification after processing all devices
+      await this.processNotification(assetId, relatedEntityName);
       this.logger.log(
-        `ChirpStack response for device ${devEui}: ${JSON.stringify(
-          chirpstackRes.data,
-        )}`,
+        `Action completed for asset ${assetId} with status ${statusLight}`,
       );
+    } catch (error) {
+      this.logger.error(`Error processing action: ${error.message}`);
+      throw error;
     }
   }
 
   async processTimeSync(assetId: string, timeNow: string): Promise<void> {
-    const thingsboardToken = await this.authService.getAccessToken();
-    const deviceIds = await this.getChildDeviceIds(assetId, thingsboardToken);
-    // Với mỗi device, lấy telemetry và attributes từ ThingsBoard rồi gửi lên ChirpStack
-    for (const deviceId of deviceIds) {
-      const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
-      const attributesUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/attributes?keys=dev_eui`;
+    try {
+      const thingsboardToken = await this.authService.getAccessToken();
+      const deviceData = await this.fetchDeviceData(assetId, thingsboardToken);
 
-      const [telemetryRes, attributesRes] = await Promise.all([
-        firstValueFrom(
-          this.httpService.get(telemetryUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-        firstValueFrom(
-          this.httpService.get(attributesUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-      ]);
+      await this.processDevices(deviceData, async (device) => {
+        const hexString = this.encodeHexTimeSync(device.dataUid, timeNow);
+        const base64String = this.decodeHexToBase64(hexString);
 
-      const telemetryData = telemetryRes.data.data_UID?.[0];
-      if (!telemetryData) {
-        this.logger.error(`No telemetry data for device ${deviceId}`);
-        continue;
-      }
-      const dataUid = telemetryData.value;
+        return this.sendChirpstackCommand(device.devEui, base64String);
+      });
 
-      const attributesData = attributesRes.data?.[0];
-      if (!attributesData) {
-        this.logger.error(`No attributes data for device ${deviceId}`);
-        continue;
-      }
-      const devEui = attributesData.value;
-
-      // Tạo hex string và chuyển đổi sang base64
-      const hexString = this.encodeHexTimeSync(dataUid, timeNow);
-      const base64String = this.decodeHexToBase64(hexString);
-
-      // Đợi 6 giây trước khi gọi API ChirpStack (có thể dùng để đồng bộ nếu cần)
-      await new Promise((resolve) => setTimeout(resolve, 6000));
-
-      // Gọi API ChirpStack để gửi queue
-      const chirpstackUrl = `${this.chirpstackUrl}/api/devices/${devEui}/queue`;
-      const chirpstackPayload = {
-        queueItem: {
-          confirmed: false,
-          data: base64String,
-          fPort: 10,
-        },
-      };
-
-      const chirpstackRes = await firstValueFrom(
-        this.httpService.post(chirpstackUrl, chirpstackPayload, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Grpc-Metadata-Authorization': `Bearer ${this.chirpstackToken}`,
-          },
-        }),
-      );
-      this.logger.log(
-        `ChirpStack response for device ${devEui}: ${JSON.stringify(
-          chirpstackRes.data,
-        )}`,
-      );
+      this.logger.log(`Time sync completed for asset ${assetId}`);
+    } catch (error) {
+      this.logger.error(`Error processing time sync: ${error.message}`);
+      throw error;
     }
   }
 
   async processSchedule(
     assetId: string,
     scheduleParams: ScheduleParams,
+    relatedEntityName: string,
   ): Promise<void> {
-    const thingsboardToken = await this.authService.getAccessToken();
-    const deviceIds = await this.getChildDeviceIds(assetId, thingsboardToken);
+    try {
+      const thingsboardToken = await this.authService.getAccessToken();
+      const deviceData = await this.fetchDeviceData(assetId, thingsboardToken);
 
-    for (const deviceId of deviceIds) {
-      const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
-      const attributesUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/attributes?keys=dev_eui`;
+      await this.processDevices(deviceData, async (device) => {
+        const hexString = this.encodeHexSchedule(
+          device.dataUid,
+          scheduleParams,
+        );
+        const base64String = this.decodeHexToBase64(hexString);
 
-      const [telemetryRes, attributesRes] = await Promise.all([
-        firstValueFrom(
-          this.httpService.get(telemetryUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-        firstValueFrom(
-          this.httpService.get(attributesUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-      ]);
+        this.logger.log(`Schedule Hex: ${hexString}`);
+        this.logger.log(`Schedule Base64: ${base64String}`);
 
-      const telemetryData = telemetryRes.data.data_UID?.[0];
-      if (!telemetryData) {
-        this.logger.error(`No telemetry data for device ${deviceId}`);
-        continue;
+        return this.sendChirpstackCommand(device.devEui, base64String);
+      });
+
+      // Trigger notification after processing all devices
+      await this.sendScheduleNotification(
+        deviceData.length,
+        relatedEntityName,
+        thingsboardToken,
+      );
+      this.logger.log(`Schedule completed for asset ${assetId}`);
+    } catch (error) {
+      this.logger.error(`Error processing schedule: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async processNotification(
+    assetId: string,
+    relatedEntityName: string,
+  ): Promise<void> {
+    try {
+      const thingsboardToken = await this.authService.getAccessToken();
+      const deviceIds = await this.getChildDeviceIds(assetId, thingsboardToken);
+
+      // Count devices status
+      let onCount = 0;
+      let offCount = 0;
+
+      for (const deviceId of deviceIds) {
+        const dimlevelUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_dim_level`;
+
+        try {
+          const dimlevelRes = await firstValueFrom(
+            this.httpService.get(dimlevelUrl, {
+              headers: this.getThingsboardHeaders(thingsboardToken),
+            }),
+          );
+
+          const dimlevelData = dimlevelRes.data.data_dim_level?.[0];
+          if (!dimlevelData) {
+            this.logger.warn(`No dim level data for device ${deviceId}`);
+            continue;
+          }
+
+          const dimLevel = dimlevelData.value;
+          if (dimLevel > 0) {
+            onCount++;
+          } else {
+            offCount++;
+          }
+          console.log(
+            `Device ${deviceId} dim level: ${dimLevel}, onCount: ${onCount}, offCount: ${offCount}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Error fetching dim level for device ${deviceId}: ${error.message}`,
+          );
+        }
       }
-      const dataUid = telemetryData.value;
 
-      const attributesData = attributesRes.data?.[0];
-      if (!attributesData) {
-        this.logger.error(`No attributes data for device ${deviceId}`);
-        continue;
+      // Get notification targets
+      const targetsUrl = `${this.thingsboardUrl}/api/notification/targets?pageSize=100&page=0`;
+      const targetsRes = await firstValueFrom(
+        this.httpService.get(targetsUrl, {
+          headers: this.getThingsboardHeaders(thingsboardToken),
+        }),
+      );
+
+      const targets = targetsRes.data.data;
+      if (!targets || targets.length === 0) {
+        throw new Error('No notification targets found');
       }
-      const devEui = attributesData.value;
 
-      const hexString = this.encodeHexSchedule(dataUid, scheduleParams);
-      const base64String = this.decodeHexToBase64(hexString);
+      // Find a suitable target (looking for PLATFORM_USERS type targets)
+      const suitableTarget = targets.find(
+        (target) =>
+          target.name === 'Bộ phận quản lý phường' &&
+          target.configuration.type === 'PLATFORM_USERS',
+      );
 
-      this.logger.log(`Schedule Hex: ${hexString}`);
-      this.logger.log(`Schedule Base64: ${base64String}`);
+      if (!suitableTarget) {
+        throw new Error('No suitable notification target found');
+      }
 
-      await new Promise((resolve) => setTimeout(resolve, 6000));
+      const targetId = suitableTarget.id.id;
+      console.log(`Target ID: ${targetId}`);
+      const totalDevices = deviceIds.length;
 
-      const chirpstackUrl = `${this.chirpstackUrl}/api/devices/${devEui}/queue`;
-      const chirpstackPayload = {
-        queueItem: {
-          confirmed: false,
-          data: base64String,
-          fPort: 10,
+      // Send notification
+      const notificationUrl = `${this.thingsboardUrl}/api/notification/request`;
+      const notificationRequest = {
+        targets: [targetId],
+        template: {
+          name: 'Device Status Report',
+          notificationType: 'GENERAL',
+          configuration: {
+            deliveryMethodsTemplates: {
+              WEB: {
+                enabled: true,
+                method: 'WEB',
+                subject: `Thông báo tín hiệu cụm thiết bị`,
+                body: `${relatedEntityName} hiện đang bật ${onCount}/${totalDevices} thiết bị.`,
+              },
+            },
+          },
+        },
+        additionalConfig: {
+          sendingDelayInSec: 0,
         },
       };
 
-      const chirpstackRes = await firstValueFrom(
-        this.httpService.post(chirpstackUrl, chirpstackPayload, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Grpc-Metadata-Authorization': `Bearer ${this.chirpstackToken}`,
-          },
+      const response = await firstValueFrom(
+        this.httpService.post(notificationUrl, notificationRequest, {
+          headers: this.getThingsboardHeaders(thingsboardToken),
         }),
       );
+
       this.logger.log(
-        `ChirpStack schedule response for device ${devEui}: ${JSON.stringify(
-          chirpstackRes.data,
-        )}`,
+        `Đã gửi thông báo thành công. RequestId: ${response.data.id?.id}`,
       );
+    } catch (error) {
+      this.logger.error(`Lỗi khi gửi thông báo: ${error.message}`);
+      if (error.response) {
+        this.logger.error(`Response: ${JSON.stringify(error.response.data)}`);
+      }
     }
   }
 
-  async processNotification(assetId: string, assetName: string): Promise<void> {
-    const thingsboardToken = await this.authService.getAccessToken();
+  private async sendScheduleNotification(
+    deviceCount: number,
+    relatedEntityName: string,
+    thingsboardToken: string,
+  ): Promise<void> {
+    try {
+      // Get notification targets
+      const targetsUrl = `${this.thingsboardUrl}/api/notification/targets?pageSize=100&page=0`;
+      const targetsRes = await firstValueFrom(
+        this.httpService.get(targetsUrl, {
+          headers: this.getThingsboardHeaders(thingsboardToken),
+        }),
+      );
+
+      const targets = targetsRes.data.data;
+      if (!targets || targets.length === 0) {
+        throw new Error('No notification targets found');
+      }
+
+      // Find a suitable target (looking for PLATFORM_USERS type targets)
+      const suitableTarget = targets.find(
+        (target) =>
+          target.name === 'Bộ phận quản lý phường' &&
+          target.configuration.type === 'PLATFORM_USERS',
+      );
+
+      if (!suitableTarget) {
+        throw new Error('No suitable notification target found');
+      }
+
+      const targetId = suitableTarget.id.id;
+      // const totalDevices = deviceIds.length;
+
+      // Send notification
+      const notificationUrl = `${this.thingsboardUrl}/api/notification/request`;
+      const notificationRequest = {
+        targets: [targetId],
+        template: {
+          name: 'Schedule Success Report',
+          notificationType: 'GENERAL',
+          configuration: {
+            deliveryMethodsTemplates: {
+              WEB: {
+                enabled: true,
+                method: 'WEB',
+                subject: `Thông báo thiết lập cụm thiết bị`,
+                body: `Lập lịch thành công cho ${deviceCount}/${deviceCount} thiết bị trên ${relatedEntityName}`,
+              },
+            },
+          },
+        },
+        additionalConfig: {
+          sendingDelayInSec: 0,
+        },
+      };
+
+      const response = await firstValueFrom(
+        this.httpService.post(notificationUrl, notificationRequest, {
+          headers: this.getThingsboardHeaders(thingsboardToken),
+        }),
+      );
+
+      this.logger.log(
+        `Đã gửi thông báo lập lịch thành công. RequestId: ${response.data.id?.id}`,
+      );
+    } catch (error) {
+      this.logger.error(`Lỗi khi gửi thông báo lập lịch: ${error.message}`);
+      if (error.response) {
+        this.logger.error(`Response: ${JSON.stringify(error.response.data)}`);
+      }
+    }
+  }
+
+  private async fetchDeviceData(
+    assetId: string,
+    thingsboardToken: string,
+  ): Promise<DeviceData[]> {
     const deviceIds = await this.getChildDeviceIds(assetId, thingsboardToken);
-    // Với mỗi device, lấy telemetry và attributes từ ThingsBoard rồi gửi lên ChirpStack
-    let onCount = 0;
-    let offCount = 0;
-    for (const deviceId of deviceIds) {
-      const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
-      const dimlevelUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_dim_level`;
+    this.logger.log(`Device IDs: ${deviceIds}`);
+    const deviceDataPromises = deviceIds.map(async (deviceId) => {
+      try {
+        const telemetryUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/timeseries?keys=data_UID`;
+        const attributesUrl = `${this.thingsboardUrl}/api/plugins/telemetry/DEVICE/${deviceId}/values/attributes?keys=dev_eui`;
+        const [telemetryRes, attributesRes] = await Promise.all([
+          firstValueFrom(
+            this.httpService.get(telemetryUrl, {
+              headers: this.getThingsboardHeaders(thingsboardToken),
+            }),
+          ),
+          firstValueFrom(
+            this.httpService.get(attributesUrl, {
+              headers: this.getThingsboardHeaders(thingsboardToken),
+            }),
+          ),
+        ]);
 
-      const [telemetryRes, dimlevelRes] = await Promise.all([
-        firstValueFrom(
-          this.httpService.get(telemetryUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-        firstValueFrom(
-          this.httpService.get(dimlevelUrl, {
-            headers: {
-              accept: 'application/json',
-              'Content-Type': 'application/json',
-              'X-Authorization': `Bearer ${thingsboardToken}`,
-            },
-          }),
-        ),
-      ]);
-
-      const telemetryData = telemetryRes.data.data_UID?.[0];
-      if (!telemetryData) {
-        this.logger.error(`No telemetry data for device ${deviceId}`);
-        continue;
-      }
-      const dataUid = telemetryData.value;
-
-      const dimlevelData = dimlevelRes.data.data_dim_level[0];
-    
-      // console.log('dimlevelRes.data.data_dim_level: ', dimlevelRes.data.data_dim_level);
-      if (!dimlevelData) {
-        this.logger.error(`No attributes data for device ${deviceId}`);
-        continue;
-      }
-      const dimLevel = dimlevelData.value;
-
-      if (dimLevel > 0) {
-        onCount++;
-      } else {
-        offCount++;
-      }
-      console.log("oncount: ", onCount);
-      console.log("offcount: ", offCount);
-    }
-
-    
-
-     // Lấy tenant ID
-  // const tenantUrl = `${this.thingsboardUrl}/api/tenant/info`;
-  const tenantId = "8571b990-dd36-11ef-bc91-47f3a7877c36";
-  
-  // const tenantId = "8514f390-dd36-11ef-bc91-47f3a7877c36";
-  const notificationUrl = `${this.thingsboardUrl}/api/notification/request`;
-  const totalDevices = deviceIds.length;
-  
-  const notificationRequest = {
-    "targets": [
-      tenantId
-    ],
-    "template": {
-      "name": "Device Status Report",
-      "notificationType": "GENERAL",
-      "configuration": {
-        "deliveryMethodsTemplates": {
-          "WEB": {
-            "enabled": true,
-            "method": "WEB",
-            "subject": `Báo cáo trạng thái thiết bị`,
-            "body": `${assetName} hiện đang bật ${onCount}/${totalDevices} thiết bị.`
-          }
+        const telemetryData = telemetryRes.data.data_UID?.[0];
+        if (!telemetryData) {
+          throw new Error(`No telemetry data for device ${deviceId}`);
         }
+        let dataUid = telemetryData.value;
+
+        if (dataUid.length !== 12) {
+          this.logger.log(
+            `Data UID length is not 12 for device ${deviceId}, padding with zeros`,
+          );
+          dataUid = dataUid.padStart(12, '0');
+        }
+
+        const attributesData = attributesRes.data?.[0];
+        if (!attributesData) {
+          throw new Error(`No attributes data for device ${deviceId}`);
+        }
+        const devEui = attributesData.value;
+        this.logger.log(
+          `Device ID: ${deviceId}, Data UID: ${dataUid}, Data UID: ${typeof dataUid}, Dev EUI: ${devEui}`,
+        );
+        return { deviceId, dataUid, devEui };
+      } catch (error) {
+        this.logger.error(
+          `Failed to fetch data for device ${deviceId}: ${error.message}`,
+        );
+        return null;
       }
-    },
-    "additionalConfig": {
-      "sendingDelayInSec": 0
+    });
+    const results = await Promise.all(deviceDataPromises);
+    return results.filter(Boolean) as DeviceData[];
+  }
+
+  private async processDevices(
+    devices: DeviceData[],
+    processFunction: (device: DeviceData) => Promise<any>,
+    delayBetweenRequests: number = 6000,
+  ): Promise<void> {
+    this.logger.log('=======> PROCESS DEVICES CALL <=======');
+    for (const device of devices) {
+      try {
+        await processFunction(device);
+
+        // Apply delay between device processing
+        if (delayBetweenRequests > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, delayBetweenRequests),
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Error processing device ${device.deviceId}: ${error.message}`,
+        );
+      }
     }
-  };
-  
-  try {
-    const response = await firstValueFrom(
-      this.httpService.post(notificationUrl, notificationRequest, {
+  }
+
+  private async sendChirpstackCommand(
+    devEui: string,
+    base64Data: string,
+    fPort: number = 10,
+  ): Promise<any> {
+    const chirpstackUrl = `${this.chirpstackUrl}/api/devices/${devEui}/queue`;
+    const chirpstackPayload = {
+      queueItem: {
+        confirmed: false,
+        data: base64Data,
+        fPort,
+      },
+    };
+
+    const chirpstackRes = await firstValueFrom(
+      this.httpService.post(chirpstackUrl, chirpstackPayload, {
         headers: {
           'Content-Type': 'application/json',
-          'X-Authorization': `Bearer ${thingsboardToken}`,
+          'Grpc-Metadata-Authorization': `Bearer ${this.chirpstackToken}`,
         },
       }),
     );
-    this.logger.log(`Đã gửi thông báo thành công. RequestId: ${response.data.id?.id}`);
-  } catch (error) {
-    this.logger.error(`Lỗi khi gửi thông báo: ${error.message}`);
-    if (error.response) {
-      this.logger.error(`Response: ${JSON.stringify(error.response.data)}`);
-    }
+
+    this.logger.log(
+      `ChirpStack response for device ${devEui}: ${JSON.stringify(
+        chirpstackRes.data,
+      )}`,
+    );
+
+    return chirpstackRes.data;
   }
+
+  private getThingsboardHeaders(token: string): Record<string, string> {
+    return {
+      accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Authorization': `Bearer ${token}`,
+    };
   }
 
   private async getChildDeviceIds(
@@ -384,11 +440,7 @@ export class ActionsService {
 
     const relationsResponse = await firstValueFrom(
       this.httpService.post(relationsUrl, relationPayload, {
-        headers: {
-          accept: 'application/json',
-          'Content-Type': 'application/json',
-          'X-Authorization': `Bearer ${token}`,
-        },
+        headers: this.getThingsboardHeaders(token),
       }),
     );
 
@@ -396,10 +448,11 @@ export class ActionsService {
       .filter((item) => item.to.entityType === 'DEVICE')
       .map((item) => item.to.id);
 
-    this.logger.log(`Found child devices: ${deviceIds}`);
+    this.logger.log(`Found ${deviceIds.length} child devices`);
     return deviceIds;
   }
 
+  // Encoding methods
   private encodeHexTurnLight(data_UID: string, status_Light: string): string {
     const fixedValues = '680106F0002001';
     const uidHex = data_UID.toUpperCase();
@@ -427,15 +480,13 @@ export class ActionsService {
 
   private encodeHexTimeSync(data_UID: string, time_Now: string): string {
     const fixedValues = ['68', '01', '0B', 'F0', '00', '2D'];
-    // Parse UID (data_UID truyền vào là JSON string kiểu `"D7AA1090"`)
-    const uid = data_UID.toUpperCase(); // parse ra "D7AA1090"
+    const uid = data_UID.toUpperCase();
     const uidHexArray = uid.match(/.{1,2}/g)?.map((byte) => byte.toUpperCase());
     if (!uidHexArray || uidHexArray.length === 0) {
       throw new Error('Invalid UID format.');
     }
     const uidHex = uidHexArray.join('');
 
-    // Parse thời gian
     const parts = time_Now.split(' ');
     if (parts.length < 3) {
       throw new Error('Invalid time_Now format.');
@@ -468,10 +519,8 @@ export class ActionsService {
       toHex(day) +
       toHex(daysOfWeek[weekday]);
 
-    // Ghép chuỗi hex đầy đủ
     const fullHexString = '68' + uidHex + fixedValues.join('') + hexTimeNow;
 
-    // Tính checksum
     const byteArray = fullHexString
       .match(/.{1,2}/g)!
       .map((hex) => parseInt(hex, 16));
